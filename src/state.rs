@@ -26,10 +26,8 @@ pub struct State {
     /// 頂点バッファやインデックスバッファなどのリソース管理
     buffers: Buffers,
 
-    // egui 関連
-    pub egui_state: egui_winit::State,
-    pub egui_renderer: egui_wgpu::Renderer,
-    pub checkbox_state: bool,
+    #[cfg(feature = "gui")]
+    pub gui: crate::gui::Gui,
 }
 
 impl State {
@@ -87,6 +85,9 @@ impl State {
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let buffers = Buffers::new(&device);
 
+        #[cfg(feature = "gui")]
+        let gui = crate::gui::Gui::new(&window, &device, config.format);
+
         let bind_group_and_layout = buffers
             .bind_groups
             .iter()
@@ -140,18 +141,6 @@ impl State {
             cache: None,
         });
 
-        // egui 初期化
-        let egui_context = egui::Context::default();
-        let egui_state = egui_winit::State::new(
-            egui_context,
-            egui::viewport::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(&device, config.format, None, 1, false);
-
         Self {
             surface,
             device,
@@ -161,9 +150,8 @@ impl State {
             render_pipeline,
             window,
             buffers,
-            egui_state,
-            egui_renderer,
-            checkbox_state: false,
+            #[cfg(feature = "gui")]
+            gui,
         }
     }
 
@@ -195,39 +183,6 @@ impl State {
             label: Some("Command Encoder"),
         });
 
-        // egui の描画準備
-        let input = self.egui_state.take_egui_input(&self.window);
-        self.egui_state.egui_ctx().begin_pass(input);
-
-        // UIの定義
-        egui::Window::new("Settings").show(self.egui_state.egui_ctx(), |ui| {
-            ui.checkbox(&mut self.checkbox_state, "Check me!");
-        });
-
-        let full_output = self.egui_state.egui_ctx().end_pass();
-        let paint_jobs = self.egui_state.egui_ctx().tessellate(full_output.shapes, full_output.pixels_per_point);
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.config.width, self.config.height],
-            pixels_per_point: self.window.scale_factor() as f32,
-        };
-
-        // テクスチャの更新
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
-        }
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
-
-        // egui の描画コマンド作成
-        self.egui_renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &paint_jobs,
-            &screen_descriptor,
-        );
-
         {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -253,13 +208,18 @@ impl State {
             
             // 元々のポリゴンを描画
             render_pass.draw_indexed(0..(INDICES.len() as u32), 0, 0..1);
-
-            // egui を描画
-            unsafe {
-                let render_pass_static: &mut wgpu::RenderPass<'static> = std::mem::transmute(&mut render_pass);
-                self.egui_renderer.render(render_pass_static, &paint_jobs, &screen_descriptor);
-            }
         }
+
+        #[cfg(feature = "gui")]
+        self.gui.render(
+            &self.window,
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &view,
+            self.config.width,
+            self.config.height,
+        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();

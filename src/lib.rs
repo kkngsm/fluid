@@ -1,4 +1,5 @@
 pub mod buffers;
+pub mod gui;
 pub mod state;
 pub mod vertex;
 
@@ -107,8 +108,8 @@ impl ApplicationHandler for App {
         };
 
         // egui にイベントを渡す
-        let response = state.egui_state.on_window_event(&state.window, &event);
-        if response.consumed {
+        #[cfg(feature = "gui")]
+        if state.gui.handle_event(&state.window, &event) {
             return;
         }
 

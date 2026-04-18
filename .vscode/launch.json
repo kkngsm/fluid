@@ -28,6 +28,19 @@
             "args": []
         },
         {
+            "name": "Debug executable 'fluid_euler_run' (no gui)",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=fluid_euler_run",
+                    "--no-default-features"
+                ]
+            },
+            "args": []
+        },
+        {
             "name": "Debug unit tests in executable 'fluid_euler_run'",
             "type": "lldb",
             "request": "launch",
