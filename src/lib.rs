@@ -106,6 +106,12 @@ impl ApplicationHandler for App {
             None => return,
         };
 
+        // egui にイベントを渡す
+        let response = state.egui_state.on_window_event(&state.window, &event);
+        if response.consumed {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
