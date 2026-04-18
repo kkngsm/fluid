@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wgpu Fluid Euler</title>
+    <style>
+      body {
+        margin: 0;
+        background-color: #000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+      }
+      /* 見た目の制御はCSSで行う */
+      canvas {
+        background-color: #111;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- JavaScript/HTML側でキャンバスを用意 -->
+    <canvas id="canvas" width="800" height="600"></canvas>
+
+    <script type="module">
+      import init, { run } from "./pkg/fluid_euler.js";
+
+      // ページ全体の読み込みが完了（CSSもキャンバスも準備OK）してから開始
+      window.onload = async () => {
+        // WASMの初期化
+        await init();
+        
+        // アプリケーションの開始
+        run().catch((error) => {
+          if (!error.message.startsWith("Using exceptions for control flow,")) {
+            throw error;
+          }
+        });
+      };
+    </script>
+  </body>
+</html>

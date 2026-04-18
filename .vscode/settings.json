@@ -1,0 +1,16 @@
+{
+    "cSpell.words": [
+        "bytemuck",
+        "multisample",
+        "multiview",
+        "rustfmt",
+        "Vulkan",
+        "webgl",
+        "wgpu",
+        "wgsl",
+        "winit"
+    ],
+    "rust-analyzer.cargo.target": "wasm32-unknown-unknown",
+    "rust-analyzer.check.command": "check",
+    "rust-analyzer.check.allTargets": false
+}
