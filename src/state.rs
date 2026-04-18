@@ -2,30 +2,30 @@ use std::sync::Arc;
 use wgpu::{RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline};
 use winit::window::Window;
 use crate::{
-    buffers::Buffers,
-    vertex::{Vertex, INDICES},
+    buffers::{Buffers, BindGroup, BindGroupEntry},
+    vertex::Vertex,
 };
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct AspectRatio {
+    ratio: f32,
+}
 
 /// wgpuの全コンポーネントを保持し、レンダリングフローを制御するメイン構造体
 pub struct State {
-    /// 描画対象となるウィンドウの表面（ウィンドウシステムとの橋渡し役）
     surface: wgpu::Surface<'static>,
-    /// GPUとのメイン接続。リソース（バッファ、テクスチャ、パイプライン等）の作成に使用する
     device: wgpu::Device,
-    /// GPUにコマンドを送り、非同期に実行させるためのキュー
     queue: wgpu::Queue,
-    /// ウィンドウサイズや色形式など、サーフェスの詳細な設定
     config: wgpu::SurfaceConfiguration,
-    /// 現在のウィンドウの物理サイズ（ピクセル単位）
     pub size: winit::dpi::PhysicalSize<u32>,
-    /// 頂点データとフラグメントデータをどう処理するかという一連の描画設定（パイプライン）
     render_pipeline: RenderPipeline,
-    /// ウィンドウへのハンドル
     pub window: Arc<Window>,
-
-    /// 頂点バッファやインデックスバッファなどのリソース管理
     buffers: Buffers,
-
+    
+    vertices: Vec<Vertex>,
+    frame_count: u32,
+    aspect_bind_group: wgpu::BindGroup,
     #[cfg(feature = "gui")]
     pub gui: crate::gui::Gui,
 }
@@ -33,9 +33,7 @@ pub struct State {
 impl State {
     pub async fn new(window: Arc<Window>) -> State {
         let size = window.inner_size();
-
         let instance = wgpu::Instance::default();
-
         let surface = instance.create_surface(Arc::clone(&window)).unwrap();
 
         let adapter = instance
@@ -83,25 +81,23 @@ impl State {
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-        let buffers = Buffers::new(&device);
 
-        #[cfg(feature = "gui")]
-        let gui = crate::gui::Gui::new(&window, &device, config.format);
+        // 格子状の頂点を生成
+        let (vertices, indices) = crate::vertex::create_grid(50, 50);
 
-        let bind_group_and_layout = buffers
-            .bind_groups
-            .iter()
-            .map(|bind_group| bind_group.group_and_layout(&device))
-            .collect::<Vec<_>>();
-        let ( _bind_groups, bind_group_layouts): (Vec<_>, Vec<_>) = bind_group_and_layout
-            .iter()
-            .map(|(group, layout)| (group, layout))
-            .unzip();
-
+        // アスペクト比のバインドグループ作成
+        let initial_aspect = AspectRatio { ratio: size.width as f32 / size.height as f32 };
+        let aspect_entry = BindGroupEntry::uniform(&device, initial_aspect);
+        let aspect_bg_def = BindGroup::new("Aspect Bind Group").insert(aspect_entry);
+        let aspect_layout = aspect_bg_def.bind_group_layout(&device);
+        let aspect_bind_group = aspect_bg_def.bind_group(&device, &aspect_layout);
+        
+        let mut buffers = Buffers::new(&device, &vertices, &indices);
+        
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &bind_group_layouts.iter().map(|&l| l).collect::<Vec<_>>(),
+                bind_group_layouts: &[&aspect_layout],
                 push_constant_ranges: &[],
             });
 
@@ -128,7 +124,7 @@ impl State {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None, // 両面表示
                 ..Default::default()
             },
             depth_stencil: None,
@@ -141,6 +137,12 @@ impl State {
             cache: None,
         });
 
+        #[cfg(feature = "gui")]
+        let gui = crate::gui::Gui::new(&window, &device, config.format);
+
+        // BindGroupの実体を管理するためにbuffersを少し整理
+        buffers = buffers.add_bind_group(aspect_bg_def);
+
         Self {
             surface,
             device,
@@ -150,6 +152,9 @@ impl State {
             render_pipeline,
             window,
             buffers,
+            vertices,
+            frame_count: 0,
+            aspect_bind_group,
             #[cfg(feature = "gui")]
             gui,
         }
@@ -165,6 +170,10 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            
+            // アスペクト比を更新
+            let aspect = AspectRatio { ratio: new_size.width as f32 / new_size.height as f32 };
+            self.buffers.bind_groups[0].entries[0].update(&self.queue, aspect);
         }
     }
 
@@ -173,6 +182,22 @@ impl State {
     }
 
     pub fn update(&mut self) {
+        self.frame_count += 1;
+        let t = self.frame_count as f32 * 0.02;
+
+        // CPU側で頂点カラーを更新
+        for v in self.vertices.iter_mut() {
+            let x = v.position[0];
+            let y = v.position[1];
+            
+            // 位置と時間に基づいたダイナミックな色計算
+            v.color[0] = (x + t).sin() * 0.5 + 0.5;
+            v.color[1] = (y + t * 0.5).cos() * 0.5 + 0.5;
+            v.color[2] = (x + y + t * 0.7).sin() * 0.5 + 0.5;
+        }
+
+        // 更新した頂点データをGPUに送る
+        self.buffers.vertex.update(&self.queue, &self.vertices);
     }
 
     pub fn render(&mut self) -> Result<(), String> {
@@ -190,7 +215,7 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -200,14 +225,14 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.aspect_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.buffers.vertex.buffer.slice(..));
             render_pass.set_index_buffer(
                 self.buffers.index.buffer.slice(..),
                 self.buffers.index.format,
             );
             
-            // 元々のポリゴンを描画
-            render_pass.draw_indexed(0..(INDICES.len() as u32), 0, 0..1);
+            render_pass.draw_indexed(0..self.buffers.index.num_indices, 0, 0..1);
         }
 
         #[cfg(feature = "gui")]
