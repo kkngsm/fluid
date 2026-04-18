@@ -132,6 +132,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 log::info!("Redraw triggered. Current size: {:?}", state.size);
                 if state.size.width > 0 && state.size.height > 0 {
+                    state.update();
                     match state.render() {
                         Ok(_) => log::info!("Render successful."),
                         Err(e) => {
