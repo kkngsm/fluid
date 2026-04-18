@@ -20,6 +20,7 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: RenderPipeline,
+    wireframe_pipeline: RenderPipeline,
     pub window: Arc<Window>,
     buffers: Buffers,
     
@@ -49,7 +50,7 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Primary Device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features: wgpu::Features::POLYGON_MODE_LINE,
                     required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
@@ -125,6 +126,44 @@ impl State {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None, // 両面表示
+                polygon_mode: wgpu::PolygonMode::Fill,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Wireframe Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Line,
                 ..Default::default()
             },
             depth_stencil: None,
@@ -150,6 +189,7 @@ impl State {
             config,
             size,
             render_pipeline,
+            wireframe_pipeline,
             window,
             buffers,
             vertices,
@@ -224,7 +264,16 @@ impl State {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.render_pipeline);
+            #[cfg(feature = "gui")]
+            let pipeline = if self.gui.wireframe {
+                &self.wireframe_pipeline
+            } else {
+                &self.render_pipeline
+            };
+            #[cfg(not(feature = "gui"))]
+            let pipeline = &self.render_pipeline;
+
+            render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, &self.aspect_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.buffers.vertex.buffer.slice(..));
             render_pass.set_index_buffer(

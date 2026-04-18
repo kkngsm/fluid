@@ -13,9 +13,10 @@ pub struct Gui {
     pub egui_state: EguiState,
     pub egui_renderer: EguiRenderer,
     pub checkbox_state: bool,
+    pub wireframe: bool,
 }
 
-
+#[cfg(feature = "gui")]
 impl Gui {
     pub fn new(window: &Window, device: &Device, config_format: TextureFormat) -> Self {
         let egui_context = egui::Context::default();
@@ -33,6 +34,7 @@ impl Gui {
             egui_state,
             egui_renderer,
             checkbox_state: false,
+            wireframe: false,
         }
     }
 
@@ -57,7 +59,9 @@ impl Gui {
         // UIの定義
         egui::Window::new("Settings").show(self.egui_state.egui_ctx(), |ui| {
             ui.checkbox(&mut self.checkbox_state, "Check me!");
+            ui.checkbox(&mut self.wireframe, "Wireframe");
         });
+
 
         let full_output = self.egui_state.egui_ctx().end_pass();
         let paint_jobs = self.egui_state.egui_ctx().tessellate(full_output.shapes, full_output.pixels_per_point);
