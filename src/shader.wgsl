@@ -6,20 +6,25 @@ struct AspectUniform {
 @group(0) @binding(0)
 var<uniform> aspect: AspectUniform;
 
+@group(1) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1)
+var s_diffuse: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) tex_coords: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) tex_coords: vec2<f32>,
 };
 
 @vertex
 fn vs_main(vin: VertexInput) -> VertexOutput {
     var vout: VertexOutput;
-    vout.color = vin.color;
+    vout.tex_coords = vin.tex_coords;
     
     var pos = vin.position;
     // アスペクト比を考慮して座標を調整（正方形を維持）
@@ -37,5 +42,5 @@ fn vs_main(vin: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(fin: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(fin.color, 1.0);
+    return textureSample(t_diffuse, s_diffuse, fin.tex_coords);
 }

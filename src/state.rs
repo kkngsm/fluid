@@ -4,6 +4,7 @@ use winit::window::Window;
 use crate::{
     buffers::{Buffers, BindGroup, BindGroupEntry},
     vertex::Vertex,
+    fluid::Fluid,
 };
 
 #[repr(C)]
@@ -11,6 +12,8 @@ use crate::{
 struct AspectRatio {
     ratio: f32,
 }
+
+const GRID_SIZE: usize = 64;
 
 /// wgpuの全コンポーネントを保持し、レンダリングフローを制御するメイン構造体
 pub struct State {
@@ -24,9 +27,12 @@ pub struct State {
     pub window: Arc<Window>,
     buffers: Buffers,
     
-    vertices: Vec<Vertex>,
-    frame_count: u32,
+    fluid: Fluid,
+    mouse_pressed: bool,
+    mouse_pos: nalgebra_glm::Vec2,
     aspect_bind_group: wgpu::BindGroup,
+    density_texture: wgpu::Texture,
+    density_bind_group: wgpu::BindGroup,
     #[cfg(feature = "gui")]
     pub gui: crate::gui::Gui,
 }
@@ -83,8 +89,8 @@ impl State {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
-        // 格子状の頂点を生成
-        let (vertices, indices) = crate::vertex::create_grid(50, 50);
+        // 単一の四角形（4頂点）を生成
+        let (vertices, indices) = crate::vertex::create_quad();
 
         // アスペクト比のバインドグループ作成
         let initial_aspect = AspectRatio { ratio: size.width as f32 / size.height as f32 };
@@ -92,13 +98,46 @@ impl State {
         let aspect_bg_def = BindGroup::new("Aspect Bind Group").insert(aspect_entry);
         let aspect_layout = aspect_bg_def.bind_group_layout(&device);
         let aspect_bind_group = aspect_bg_def.bind_group(&device, &aspect_layout);
+
+        // テクスチャの作成
+        let texture_size = wgpu::Extent3d {
+            width: GRID_SIZE as u32,
+            height: GRID_SIZE as u32,
+            depth_or_array_layers: 1,
+        };
+        let density_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Density Texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let density_view = density_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let density_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let density_bg_def = BindGroup::new("Density Bind Group")
+            .insert(BindGroupEntry::texture(density_view))
+            .insert(BindGroupEntry::sampler(density_sampler));
+        let density_layout = density_bg_def.bind_group_layout(&device);
+        let density_bind_group = density_bg_def.bind_group(&device, &density_layout);
         
         let mut buffers = Buffers::new(&device, &vertices, &indices);
         
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&aspect_layout],
+                bind_group_layouts: &[&aspect_layout, &density_layout],
                 push_constant_ranges: &[],
             });
 
@@ -192,9 +231,12 @@ impl State {
             wireframe_pipeline,
             window,
             buffers,
-            vertices,
-            frame_count: 0,
+            fluid: Fluid::new(GRID_SIZE, 0.1, 0.0, 0.000001),
+            mouse_pressed: false,
+            mouse_pos: nalgebra_glm::Vec2::zeros(),
             aspect_bind_group,
+            density_texture,
+            density_bind_group,
             #[cfg(feature = "gui")]
             gui,
         }
@@ -213,32 +255,86 @@ impl State {
             
             // アスペクト比を更新
             let aspect = AspectRatio { ratio: new_size.width as f32 / new_size.height as f32 };
-            self.buffers.bind_groups[0].entries[0].update(&self.queue, aspect);
+            self.buffers.bind_groups[0].entries[0].update_buffer(&self.queue, aspect);
         }
     }
 
-    pub fn input(&mut self, _: &winit::event::WindowEvent) -> bool {
-        false
+    pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+        match event {
+            winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                if *button == winit::event::MouseButton::Left {
+                    self.mouse_pressed = *state == winit::event::ElementState::Pressed;
+                }
+                true
+            }
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_pos = nalgebra_glm::vec2(position.x as f32, position.y as f32);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn update(&mut self) {
-        self.frame_count += 1;
-        let t = self.frame_count as f32 * 0.02;
+        if self.mouse_pressed {
+            let aspect = self.size.width as f32 / self.size.height as f32;
 
-        // CPU側で頂点カラーを更新
-        for v in self.vertices.iter_mut() {
-            let x = v.position[0];
-            let y = v.position[1];
-            
-            // 位置と時間に基づいたダイナミックな色計算
-            v.color[0] = (x + t).sin() * 0.5 + 0.5;
-            v.color[1] = (y + t * 0.5).cos() * 0.5 + 0.5;
-            v.color[2] = (x + y + t * 0.7).sin() * 0.5 + 0.5;
+            // マウス座標を正規化 (0.0 - 1.0)
+            let nx = self.mouse_pos.x / self.size.width as f32;
+            let ny = self.mouse_pos.y / self.size.height as f32;
+
+            // シェーダーの vs_main と同じロジックで正規化座標 (-1.0 - 1.0) に変換
+            let (px, py) = if aspect > 1.0 {
+                ((nx * 2.0 - 1.0) * aspect, ny * 2.0 - 1.0)
+            } else {
+                (nx * 2.0 - 1.0, (ny * 2.0 - 1.0) / aspect)
+            };
+
+            // -1.0 - 1.0 の空間を 0 - GRID_SIZE のインデックスに変換
+            let x = (((px + 1.0) / 2.0) * GRID_SIZE as f32) as usize;
+            let y = (((py + 1.0) / 2.0) * GRID_SIZE as f32) as usize;
+
+            if x < GRID_SIZE && y < GRID_SIZE {
+                self.fluid.add_density(x, y, 10.0);
+            }
         }
 
-        // 更新した頂点データをGPUに送る
-        self.buffers.vertex.update(&self.queue, &self.vertices);
+        self.fluid.step();
+
+        // 流体の密度（Vec<f32>）をテクスチャ（RGBA）に変換
+        let mut data = vec![0u8; GRID_SIZE * GRID_SIZE * 4];
+        for y in 0..GRID_SIZE {
+            for x in 0..GRID_SIZE {
+                let d = self.fluid.get_density(x, y);
+                let idx = (y * GRID_SIZE + x) * 4;
+                data[idx] = (d * 255.0).min(255.0) as u8;     // R
+                data[idx + 1] = (d * 255.0).min(255.0) as u8; // G
+                data[idx + 2] = (d * 255.0).min(255.0) as u8;       // B
+                data[idx + 3] = 255;                                // A
+            }
+        }
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.density_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * GRID_SIZE as u32),
+                rows_per_image: Some(GRID_SIZE as u32),
+            },
+            wgpu::Extent3d {
+                width: GRID_SIZE as u32,
+                height: GRID_SIZE as u32,
+                depth_or_array_layers: 1,
+            },
+        );
     }
+
 
     pub fn render(&mut self) -> Result<(), String> {
         let output = self.surface.get_current_texture().map_err(|e| e.to_string())?;
@@ -275,6 +371,7 @@ impl State {
 
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(0, &self.aspect_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.density_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.buffers.vertex.buffer.slice(..));
             render_pass.set_index_buffer(
                 self.buffers.index.buffer.slice(..),

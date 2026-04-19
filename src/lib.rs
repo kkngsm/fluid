@@ -1,4 +1,5 @@
 pub mod buffers;
+pub mod fluid;
 pub mod gui;
 pub mod state;
 pub mod vertex;
@@ -110,6 +111,10 @@ impl ApplicationHandler for App {
         // egui にイベントを渡す
         #[cfg(feature = "gui")]
         if state.gui.handle_event(&state.window, &event) {
+            return;
+        }
+
+        if state.input(&event) {
             return;
         }
 

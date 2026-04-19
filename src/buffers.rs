@@ -108,10 +108,36 @@ impl BindGroupLayoutEntry {
             count: None,
         }
     }
+
+    pub fn texture() -> Self {
+        Self {
+            visibility: ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }
+    }
+
+    pub fn sampler() -> Self {
+        Self {
+            visibility: ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        }
+    }
+}
+
+pub enum BindGroupResource {
+    Buffer(wgpu::Buffer),
+    Texture(wgpu::TextureView),
+    Sampler(wgpu::Sampler),
 }
 
 pub struct BindGroupEntry {
-    pub buffer: wgpu::Buffer,
+    pub resource: BindGroupResource,
     pub layout: BindGroupLayoutEntry,
 }
 
@@ -123,13 +149,29 @@ impl BindGroupEntry {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         Self {
-            buffer,
+            resource: BindGroupResource::Buffer(buffer),
             layout: BindGroupLayoutEntry::uniform(),
         }
     }
 
-    pub fn update<T: bytemuck::Pod>(&self, queue: &Queue, data: T) {
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&data));
+    pub fn texture(view: wgpu::TextureView) -> Self {
+        Self {
+            resource: BindGroupResource::Texture(view),
+            layout: BindGroupLayoutEntry::texture(),
+        }
+    }
+
+    pub fn sampler(sampler: wgpu::Sampler) -> Self {
+        Self {
+            resource: BindGroupResource::Sampler(sampler),
+            layout: BindGroupLayoutEntry::sampler(),
+        }
+    }
+
+    pub fn update_buffer<T: bytemuck::Pod>(&self, queue: &Queue, data: T) {
+        if let BindGroupResource::Buffer(buffer) = &self.resource {
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&data));
+        }
     }
 }
 
@@ -169,7 +211,11 @@ impl BindGroup {
             .enumerate()
             .map(|(binding, entry)| wgpu::BindGroupEntry {
                 binding: binding as u32,
-                resource: entry.buffer.as_entire_binding(),
+                resource: match &entry.resource {
+                    BindGroupResource::Buffer(buffer) => buffer.as_entire_binding(),
+                    BindGroupResource::Texture(view) => wgpu::BindingResource::TextureView(view),
+                    BindGroupResource::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
+                },
             })
             .collect::<Vec<_>>();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
